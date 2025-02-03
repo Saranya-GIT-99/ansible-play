@@ -1,0 +1,25 @@
+---
+- name: Determine API Gateway ID (VPC Endpoint Case)
+  block:
+    - name: Extract VPC Endpoint ID
+      set_fact:
+        vpce_id: "{{ host_parts[0].split('-', 1)[1] }}"
+
+    - name: Get API Gateway Service Name
+      command: >
+        aws ec2 describe-vpc-endpoints
+        --vpc-endpoint-ids "vpce-{{ vpce_id }}"
+        --query "VpcEndpoints[0].ServiceName"
+        --output text
+      register: vpce_service
+      changed_when: false
+
+    - name: Set API Gateway ID from VPC Endpoint
+      set_fact:
+        api_gateway_id: "{{ vpce_service.stdout.split('/')[-1] }}"
+  when: is_vpce
+
+- name: Determine API Gateway ID (Standard Case)
+  set_fact:
+    api_gateway_id: "{{ host_parts[0] }}"
+  when: not is_vpce
