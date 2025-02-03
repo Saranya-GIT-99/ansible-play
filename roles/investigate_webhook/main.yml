@@ -1,0 +1,117 @@
+---
+- name: Investigate Failed Webhook Stage
+  hosts: localhost
+  gather_facts: false
+  vars:
+    failed_url: "https://vpce-05a7945419ca2-kynbcsgq.execute-api.us-east-1.vpce.amazonaws.com/v1"
+    retention_hours: 1
+    aws_region: "us-east-1"
+
+  tasks:
+    - name: Extract URL components
+      set_fact:
+        is_vpce: "{{ 'vpce' in failed_url }}"
+        url_parts: "{{ failed_url.split('/') }}"
+        host_parts: "{{ failed_url.split('.') }}"
+
+    - name: Set AWS region from URL
+      set_fact:
+        aws_region: "{{ host_parts[2] }}"
+      when: host_parts[1] == "execute-api"
+
+    - name: Resolve API Gateway ID (VPC Endpoint Case)
+      block:
+        - name: Extract VPC Endpoint ID
+          set_fact:
+            vpce_id: "{{ host_parts[0].split('-', 1)[1] }}"
+
+        - name: Get API Gateway service name
+          command: >
+            aws ec2 describe-vpc-endpoints
+            --vpc-endpoint-ids "vpce-{{ vpce_id }}"
+            --query "VpcEndpoints[0].ServiceName"
+            --output text
+          register: vpce_service
+          changed_when: false
+
+        - name: Set API Gateway ID from VPC Endpoint
+          set_fact:
+            api_gateway_id: "{{ vpce_service.stdout.split('/')[-1] }}"
+      when: is_vpce
+
+    - name: Resolve API Gateway ID (Standard Case)
+      set_fact:
+        api_gateway_id: "{{ host_parts[0] }}"
+      when: not is_vpce
+
+    - name: Get API Gateway details
+      command: >
+        aws apigateway get-rest-api
+        --rest-api-id {{ api_gateway_id }}
+        --region {{ aws_region }}
+      register: api_gateway_info
+      changed_when: false
+
+    - name: Get API Gateway resources
+      command: >
+        aws apigateway get-resources
+        --rest-api-id {{ api_gateway_id }}
+        --region {{ aws_region }}
+        --query "items[0].id"
+        --output text
+      register: api_gateway_root_resource
+      changed_when: false
+
+    - name: Get Lambda integration details
+      command: >
+        aws apigateway get-integration
+        --rest-api-id {{ api_gateway_id }}
+        --resource-id {{ api_gateway_root_resource.stdout }}
+        --http-method ANY
+        --region {{ aws_region }}
+      register: api_integration
+      changed_when: false
+
+    - name: Extract Lambda ARN
+      set_fact:
+        lambda_arn: "{{ api_integration.stdout | from_json | json_query('uri') }}"
+
+    - name: Parse Lambda function name
+      set_fact:
+        lambda_name: "{{ lambda_arn.split(':')[-1] }}"
+
+    - name: Get API Gateway logs
+      command: >
+        aws logs filter-log-events
+        --log-group-name "API-Gateway-Execution-Logs_{{ api_gateway_id }}/{{ api_gateway_info.stdout | from_json | json_query('name') }}"
+        --region {{ aws_region }}
+        --start-time {{ (ansible_date_time.epoch | int - (retention_hours * 3600)) * 1000 }}
+        --filter-pattern "404 OR ERROR"
+      register: api_gateway_logs
+      changed_when: false
+
+    - name: Get Lambda logs
+      command: >
+        aws logs filter-log-events
+        --log-group-name "/aws/lambda/{{ lambda_name }}"
+        --region {{ aws_region }}
+        --start-time {{ (ansible_date_time.epoch | int - (retention_hours * 3600)) * 1000 }}
+        --filter-pattern "ERROR"
+      register: lambda_logs
+      changed_when: false
+
+    - name: Show investigation results
+      debug:
+        msg: |
+          API Gateway Investigation Report
+          ================================
+          API Gateway ID: {{ api_gateway_id }}
+          API Gateway Name: {{ api_gateway_info.stdout | from_json | json_query('name') }}
+          AWS Region: {{ aws_region }}
+          Associated Lambda: {{ lambda_name }}
+          
+          API Gateway Logs (Last {{ retention_hours }}h):
+          {{ api_gateway_logs.stdout | to_nice_json }}
+          
+          Lambda Logs (Last {{ retention_hours }}h):
+          {{ lambda_logs.stdout | to_nice_json }}
