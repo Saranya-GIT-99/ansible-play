@@ -1,0 +1,6 @@
+---
+- name: Extract URL components
+  set_fact:
+    is_vpce: "{{ 'vpce' in failed_url }}"
+    url_parts: "{{ failed_url.split('/') }}"
+    host_parts: "{{ failed_url.split('.') }}"
