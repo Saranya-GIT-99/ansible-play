@@ -1,0 +1,4 @@
+---
+- name: Notify Investigation Complete
+  debug:
+    msg: "Webhook investigation completed successfully!"
