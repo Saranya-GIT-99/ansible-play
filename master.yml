@@ -1,0 +1,6 @@
+---
+- name: Run Master Ansible Playbook
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - investigate_webhook
